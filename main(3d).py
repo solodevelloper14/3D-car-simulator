@@ -9,10 +9,16 @@ window.exit_button.visible = False
 window.entity_counter.enabled = False
 window.collider_counter.enabled = False
 window.cog_button.enabled = False
+
+dots=[tuple(p) for p in json.load(open("track.json"))]
+road_width = 14
 # Земля
 Entity(model='plane', scale=4000, texture='grass',
        texture_scale=(4000,4000), color=rgb(0, 130, 0), y=-0.1)
 asphalt_texture = load_texture('textures/asphalt.jpg', filtering='mipmap')
+finish_texture=load_texture('textures/finish.png')
+(fx, fz), (fx1, fz1) = dots[0], dots[1]
+finish=Entity(model='quad',texture=finish_texture,position=(fx, 0.02, fz),rotation=(90, degrees(atan2(fx1 - fx, fz1 - fz)), 0),scale=(road_width, 4),)   #повернута вздовж дороги
 # Машина
 car = Entity()
 # кузов
@@ -46,13 +52,12 @@ def analyze_input():
     brake = max(kb_brake, pad_brake)
     return steer, throttle, brake
 # траса
-road_width = 14
-dots=[tuple(p) for p in json.load(open("track.json"))]
 n=len(dots)
 vert,uvs,triangles=[],[],[]
 dist=0
 title=5
-(x0, z0), (x1, z1) = dots[0], dots[1]
+start = n - 15 
+(x0, z0), (x1, z1) = dots[start], dots[start + 1]
 car.position = (x0, 0, z0)
 car.rotation_y = degrees(atan2(x1 - x0, z1 - z0))
 for i in range(n+1):
@@ -67,7 +72,6 @@ for i in range(n+1):
     vert.append((x-ox, 0, z-oz))
     uvs.append((0,dist/title))
     uvs.append((1,dist/title))
-
     dist += sqrt((nx - x) ** 2 + (nz - z) ** 2)
 for i in range(n):
     a, b = 2 * i, 2 * i + 1
@@ -95,6 +99,9 @@ MAX_FACTOR=1.1
 VMAX = 70
 DOWNFORCE=0.0003
 DRAG =0.001
+CORNER_DRAG=0.07
+TC_LIMIT  = 0.85
+ABS_LIMIT = 0.90
 def locate(x, z, c=None):
     min_dist=1e9
     best_i=0
@@ -159,13 +166,16 @@ def update():
     if road_dist > road_width / 2:
         rolling += GRASS_DRAG * abs(speed)
     surface_grip*=1+DOWNFORCE*speed**2
+    a_long=0
     if throttle > 0:
-        acceleration=min(12 * (1 - speed/VMAX) * throttle,surface_grip * 9.81)-rolling
+        a_long=min(12 * (1 - speed/VMAX) * throttle,surface_grip * 9.81*TC_LIMIT)
+        acceleration=a_long-rolling
         if speed <= 0:
             acceleration = max(0, acceleration)        
         speed+=acceleration*time.dt
     elif brake > 0:
-        speed -= surface_grip*9.81 * brake * time.dt
+        a_long=surface_grip*9.81 * brake*ABS_LIMIT
+        speed -=a_long* time.dt
     else:
         k = rolling + speed**2 * DRAG
         if abs(speed) < k * time.dt:
@@ -173,17 +183,21 @@ def update():
         else:
             speed -= k * time.dt * (1 if speed > 0 else -1)
     speed = clamp(speed, -8, VMAX)
-    omega = calculate_omega(speed, steer,surface_grip)
+    lat_grip = sqrt(max((surface_grip * 9.81)**2 - a_long**2, 0))
+    omega = calculate_omega(speed, steer,lat_grip/9.81)
+    speed-=CORNER_DRAG*abs(speed*omega)*time.dt*(1 if speed>0 else -1)
     car.rotation_y += degrees(omega) * time.dt
     dangle=omega*time.dt
+    max_ad = lat_grip * time.dt
+    if road_dist > road_width / 2:
+        max_ad += (ROLL_GRASS + GRASS_DRAG * abs(v_side)) * time.dt
     v_side-=speed*dangle
     speed+=v_side*dangle
-    max_ad=surface_grip*9.81*time.dt
     if abs(v_side)<=max_ad:
         v_side=0
     else: v_side-=max_ad*(1 if v_side > 0 else -1)
     car.position += car.forward*speed * time.dt + car.right*v_side*time.dt
-    speedometer.text = f'{abs(speed) * 3.6:.0f} km/h   side {v_side:.1f}'
+    speedometer.text = f'{abs(speed) * 3.6:.0f} km/h   lat {lat_grip / (surface_grip * 9.81) * 100:.0f}%'
     progress=t+seg
     progress_t.text=f"{progress:.1f}"
     delta=progress-last_progress
