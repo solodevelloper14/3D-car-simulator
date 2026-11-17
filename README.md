@@ -1,2 +1,2 @@
 # 3D-car-simulator
-A nice car simulator based on Ursina
+A nice basic car simulator based on Ursina
