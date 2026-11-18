@@ -108,7 +108,12 @@ ALPHA0=0.08
 REAR_GRIP=1.25
 V_FADE=3
 LSF=6
-DRIVE_REAR = 0.7
+DRIVE_REAR =1
+H = 0.5 #висота центру мас
+AERO_FRONT = 0.4
+BRAKE_FRONT = 0.72
+TAU = 0.15#інерція підвіски(с)
+ax_f = 0
 r=0
 def locate(x, z, c=None):
     min_dist=1e9
@@ -159,20 +164,37 @@ def fmt(sec):
     m, s = divmod(sec, 60)
     return f"{int(m)}:{s:06.3f}"
 def update():
-    global speed, last_progress, total, laps, lap_start, race_time, max_index,best_time, last_segment, lap_valid,v_side,r
+    global speed, last_progress, total, laps, lap_start, race_time, max_index, best_time,last_segment,lap_valid,v_side,r,ax_f
+    dt = max(float(time.dt), 1e-6)
     steer, throttle, brake = analyze_input()
     road_dist, seg, t = locate(car.x, car.z, last_segment)
     last_segment = seg
     surface_grip, rolling = surface(road_dist)
     if road_dist > road_width / 2:
         rolling += GRASS_DRAG * abs(speed)
-    surface_grip*=1+DOWNFORCE*speed**2
-    F_max_f = surface_grip * MASS * 9.81 * B / L
-    F_max_r = surface_grip * MASS * 9.81 * A / L * REAR_GRIP
+    down = DOWNFORCE * speed**2
+    N_f=MASS*9.81*(B/L + AERO_FRONT*down) - MASS*ax_f*H/L
+    N_r=MASS*9.81*(A/L + (1 - AERO_FRONT)*down) + MASS*ax_f*H/L
+    N_f = max(N_f, 0.05*MASS*9.81)
+    N_r = max(N_r, 0.05*MASS*9.81)
+    F_max_f = surface_grip * N_f
+    F_max_r = surface_grip * N_r * REAR_GRIP
+    speed_start = speed
     a_long = 0
     F_x_f = F_x_r = 0
+    caps = [12 * (1 - speed/VMAX) * throttle]
+    if DRIVE_REAR > 0:
+        caps.append(TC_LIMIT * F_max_r / (MASS * DRIVE_REAR))
+    if 0 < 1 - DRIVE_REAR:
+        caps.append(TC_LIMIT * F_max_f / (MASS * (1 - DRIVE_REAR)))
+        a_long = min(caps)
     if throttle > 0:
-        a_long = min(12 * (1 - speed/VMAX) * throttle, TC_LIMIT * F_max_r /(MASS*DRIVE_REAR),TC_LIMIT * F_max_f / (MASS * (1 - DRIVE_REAR)))
+        traction_limits = [12 * (1 - speed/VMAX) * throttle]
+        if DRIVE_REAR > 0:
+            traction_limits.append(TC_LIMIT * F_max_r / (MASS * DRIVE_REAR))
+        if 1 - DRIVE_REAR > 0:
+            traction_limits.append(TC_LIMIT * F_max_f / (MASS * (1 - DRIVE_REAR)))
+        a_long = min(traction_limits)
         F_x_r = MASS * a_long * DRIVE_REAR
         F_x_f = MASS * a_long * (1 - DRIVE_REAR)
         acceleration=a_long-rolling
@@ -180,10 +202,10 @@ def update():
             acceleration = max(0, acceleration)        
         speed+=acceleration*time.dt
     elif brake > 0:
-        a_long=surface_grip*9.81 * brake*ABS_LIMIT
-        F_x_f=MASS*a_long * B / L
-        F_x_r=MASS*a_long * A / L
-        speed -=a_long* time.dt
+        a_long=brake * min(ABS_LIMIT * F_max_f / (BRAKE_FRONT * MASS),ABS_LIMIT * F_max_r / ((1 - BRAKE_FRONT) * MASS))
+        F_x_f=BRAKE_FRONT*MASS*a_long
+        F_x_r=(1-BRAKE_FRONT)*MASS*a_long
+        speed-=a_long*time.dt
     else:
         k = rolling + speed**2 * DRAG
         if abs(speed) < k * time.dt:
@@ -205,6 +227,8 @@ def update():
     r+=(A*F_yf* cos(steer_angle) -B*F_yr)/IN_MOMENT*time.dt
     v_side+=((F_yf * cos(steer_angle) + F_yr) / MASS - speed * r) * time.dt
     speed+=(-F_yf * sin(steer_angle) / MASS + v_side * r) * time.dt
+    ax=(speed - speed_start) / time.dt
+    ax_f+=(ax - ax_f) * min(1, time.dt / TAU)
     damp=min(1, (1 - fade) * LSF * time.dt)
     r-=r*damp
     v_side-=v_side * damp
