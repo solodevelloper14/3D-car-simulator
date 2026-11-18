@@ -1,5 +1,5 @@
 from ursina import *
-from math import sqrt, radians, tan, degrees, atan, atan2
+from math import sqrt, radians, tan, degrees, atan, atan2,tanh,cos
 import json
 
 app = Ursina(icon="icon.ico")
@@ -102,6 +102,12 @@ DRAG =0.001
 CORNER_DRAG=0.07
 TC_LIMIT  = 0.85
 ABS_LIMIT = 0.90
+MASS=1250
+IN_MOMENT=2000
+A,B=1.4,1.3
+L=A+B
+ALPHA0=0.1
+r=0
 def locate(x, z, c=None):
     min_dist=1e9
     best_i=0
@@ -158,7 +164,7 @@ def calculate_omega(speed, steer,surface_grip):
     omega_steer=speed*tan(steer*max_angle)/2.7
     return omega_steer
 def update():
-    global speed, last_progress, total, laps, lap_start, race_time, max_index,best_time, last_segment, lap_valid,v_side
+    global speed, last_progress, total, laps, lap_start, race_time, max_index,best_time, last_segment, lap_valid,v_side,r
     steer, throttle, brake = analyze_input()
     road_dist, seg, t = locate(car.x, car.z, last_segment)
     last_segment = seg
@@ -185,6 +191,14 @@ def update():
     speed = clamp(speed, -8, VMAX)
     lat_grip = sqrt(max((surface_grip * 9.81)**2 - a_long**2, 0))
     omega = calculate_omega(speed, steer,lat_grip/9.81)
+    steer_angle = steer * radians(MAX_STEER) / (1 + (speed / 25) ** 2)
+    nz=max(abs(speed),1)
+    alpha_f=atan2(v_side+A*omega,nz)-steer_angle
+    alpha_r=atan2(v_side-B*omega,nz)
+    F_max_f = surface_grip * MASS * 9.81 * B / L
+    F_max_r = surface_grip * MASS * 9.81 * A / L
+    F_yf = -F_max_f * tanh(alpha_f / ALPHA0)
+    F_yr = -F_max_r * tanh(alpha_r / ALPHA0)
     speed-=CORNER_DRAG*abs(speed*omega)*time.dt*(1 if speed>0 else -1)
     car.rotation_y += degrees(omega) * time.dt
     dangle=omega*time.dt
@@ -197,7 +211,8 @@ def update():
         v_side=0
     else: v_side-=max_ad*(1 if v_side > 0 else -1)
     car.position += car.forward*speed * time.dt + car.right*v_side*time.dt
-    speedometer.text = f'{abs(speed) * 3.6:.0f} km/h   lat {lat_grip / (surface_grip * 9.81) * 100:.0f}%'
+    a_lat = (F_yf * cos(steer_angle) + F_yr) / MASS / 9.81# у g
+    speedometer.text = f'{abs(speed)*3.6:.0f} km/h   aF {degrees(alpha_f):.1f}  aR {degrees(alpha_r):.1f}  lat {a_lat:.2f}g'
     progress=t+seg
     progress_t.text=f"{progress:.1f}"
     delta=progress-last_progress
