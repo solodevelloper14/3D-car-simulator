@@ -90,23 +90,25 @@ camera.fov=70
 #camera.rotation = (90, 0, 0)
 speed = 0
 MAX_STEER = 30
-GRIP_DRY_TARMAC=1
+GRIP_DRY_TARMAC=1.3
 GRIP_DRY_GRASS=0.4
 ROLL_TARMAC=0.5
 ROLL_GRASS = 1.5
 GRASS_DRAG = 0.13
-MAX_FACTOR=1.1
 VMAX = 70
 DOWNFORCE=0.0003
 DRAG =0.001
-CORNER_DRAG=0.07
-TC_LIMIT  = 0.85
+TC_LIMIT= 0.85
 ABS_LIMIT = 0.90
 MASS=1250
 IN_MOMENT=2000
 A,B=1.4,1.3
 L=A+B
-ALPHA0=0.1
+ALPHA0=0.08
+REAR_GRIP=1.25
+V_FADE=3
+LSF=6
+DRIVE_REAR = 0.7
 r=0
 def locate(x, z, c=None):
     min_dist=1e9
@@ -156,13 +158,6 @@ v_side=0
 def fmt(sec):
     m, s = divmod(sec, 60)
     return f"{int(m)}:{s:06.3f}"
-def calculate_omega(speed, steer,surface_grip):
-    speedv=max(abs(speed), 0.1)
-    
-    limit_angle=MAX_FACTOR*atan(surface_grip*9.81*2.7/speedv**2)
-    max_angle = min(radians(MAX_STEER), limit_angle)
-    omega_steer=speed*tan(steer*max_angle)/2.7
-    return omega_steer
 def update():
     global speed, last_progress, total, laps, lap_start, race_time, max_index,best_time, last_segment, lap_valid,v_side,r
     steer, throttle, brake = analyze_input()
@@ -172,15 +167,22 @@ def update():
     if road_dist > road_width / 2:
         rolling += GRASS_DRAG * abs(speed)
     surface_grip*=1+DOWNFORCE*speed**2
-    a_long=0
+    F_max_f = surface_grip * MASS * 9.81 * B / L
+    F_max_r = surface_grip * MASS * 9.81 * A / L * REAR_GRIP
+    a_long = 0
+    F_x_f = F_x_r = 0
     if throttle > 0:
-        a_long=min(12 * (1 - speed/VMAX) * throttle,surface_grip * 9.81*TC_LIMIT)
+        a_long = min(12 * (1 - speed/VMAX) * throttle, TC_LIMIT * F_max_r /(MASS*DRIVE_REAR),TC_LIMIT * F_max_f / (MASS * (1 - DRIVE_REAR)))
+        F_x_r = MASS * a_long * DRIVE_REAR
+        F_x_f = MASS * a_long * (1 - DRIVE_REAR)
         acceleration=a_long-rolling
         if speed <= 0:
             acceleration = max(0, acceleration)        
         speed+=acceleration*time.dt
     elif brake > 0:
         a_long=surface_grip*9.81 * brake*ABS_LIMIT
+        F_x_f=MASS*a_long * B / L
+        F_x_r=MASS*a_long * A / L
         speed -=a_long* time.dt
     else:
         k = rolling + speed**2 * DRAG
@@ -189,28 +191,28 @@ def update():
         else:
             speed -= k * time.dt * (1 if speed > 0 else -1)
     speed = clamp(speed, -8, VMAX)
-    lat_grip = sqrt(max((surface_grip * 9.81)**2 - a_long**2, 0))
-    omega = calculate_omega(speed, steer,lat_grip/9.81)
-    steer_angle = steer * radians(MAX_STEER) / (1 + (speed / 25) ** 2)
+    steer_angle = steer * radians(MAX_STEER) / (1 + (speed / 15) ** 2)
     nz=max(abs(speed),1)
-    alpha_f=atan2(v_side+A*omega,nz)-steer_angle
-    alpha_r=atan2(v_side-B*omega,nz)
-    F_max_f = surface_grip * MASS * 9.81 * B / L
-    F_max_r = surface_grip * MASS * 9.81 * A / L
-    F_yf = -F_max_f * tanh(alpha_f / ALPHA0)
-    F_yr = -F_max_r * tanh(alpha_r / ALPHA0)
-    speed-=CORNER_DRAG*abs(speed*omega)*time.dt*(1 if speed>0 else -1)
-    car.rotation_y += degrees(omega) * time.dt
-    dangle=omega*time.dt
-    max_ad = lat_grip * time.dt
+    alpha_f=atan2(v_side+A*r,nz)-steer_angle
+    alpha_r=atan2(v_side-B*r,nz)
+    cap_f=sqrt(max(F_max_f**2 - F_x_f**2, 0))
+    cap_r=sqrt(max(F_max_r**2 - F_x_r**2, 0))
+    F_yf=-cap_f * tanh(alpha_f / ALPHA0)
+    F_yr=-cap_r * tanh(alpha_r / ALPHA0)
+    fade = min(1, abs(speed) / V_FADE)
+    F_yf *= fade
+    F_yr *= fade
+    r+=(A*F_yf* cos(steer_angle) -B*F_yr)/IN_MOMENT*time.dt
+    v_side+=((F_yf * cos(steer_angle) + F_yr) / MASS - speed * r) * time.dt
+    speed+=(-F_yf * sin(steer_angle) / MASS + v_side * r) * time.dt
+    damp=min(1, (1 - fade) * LSF * time.dt)
+    r-=r*damp
+    v_side-=v_side * damp
     if road_dist > road_width / 2:
-        max_ad += (ROLL_GRASS + GRASS_DRAG * abs(v_side)) * time.dt
-    v_side-=speed*dangle
-    speed+=v_side*dangle
-    if abs(v_side)<=max_ad:
-        v_side=0
-    else: v_side-=max_ad*(1 if v_side > 0 else -1)
-    car.position += car.forward*speed * time.dt + car.right*v_side*time.dt
+        drag_side = (ROLL_GRASS + GRASS_DRAG * abs(v_side)) * time.dt
+        v_side -= min(abs(v_side), drag_side) * (1 if v_side > 0 else -1)
+    car.rotation_y += degrees(r) * time.dt
+    car.position += car.forward * speed * time.dt + car.right * v_side * time.dt
     a_lat = (F_yf * cos(steer_angle) + F_yr) / MASS / 9.81# у g
     speedometer.text = f'{abs(speed)*3.6:.0f} km/h   aF {degrees(alpha_f):.1f}  aR {degrees(alpha_r):.1f}  lat {a_lat:.2f}g'
     progress=t+seg
