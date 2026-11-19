@@ -1,5 +1,5 @@
 from ursina import *
-from math import sqrt, radians, tan, degrees, atan, atan2,tanh,cos
+from math import sqrt, radians, degrees, atan, atan2,sin,cos,pi
 import json
 
 app = Ursina(icon="icon.ico")
@@ -97,7 +97,7 @@ ROLL_GRASS = 1.5
 GRASS_DRAG = 0.13
 VMAX = 70
 DOWNFORCE=0.0003
-DRAG =0.001
+DRAG =0.0004
 TC_LIMIT= 0.85
 ABS_LIMIT = 0.90
 MASS=1250
@@ -105,14 +105,24 @@ IN_MOMENT=2000
 A,B=1.4,1.3
 L=A+B
 ALPHA0=0.08
-REAR_GRIP=1.25
+REAR_GRIP=1.35
 V_FADE=3
 LSF=6
 DRIVE_REAR =1
 H = 0.5 #висота центру мас
 AERO_FRONT = 0.4
-BRAKE_FRONT = 0.72
+BRAKE_FRONT = 0.78
 TAU = 0.15#інерція підвіски(с)
+C=1.4
+R_WHEEL=0.32
+F_DRIVE = 3.7
+GEARS=[3.6, 2.2, 1.5, 1.1, 0.9, 0.75]
+REVERSE=3.2#передавальне число задньої
+IDLE = 900
+REDLINE=7000
+TORQUE =[(900, 250),(2500, 340), (4500, 400), (6000, 390), (7000, 330)]
+EFF = 0.9 #ККД трансмісії
+gear = 0
 ax_f = 0
 r=0
 def locate(x, z, c=None):
@@ -146,6 +156,23 @@ def surface(road_dist):
     if road_dist < road_width / 2:
         return GRIP_DRY_TARMAC, ROLL_TARMAC
     return GRIP_DRY_GRASS, ROLL_GRASS
+def input(key):
+    global gear
+    if key=="gamepad a":
+        gear+=1
+    elif key=="gamepad b":
+        gear-=1
+    gear = clamp(gear, -1, len(GEARS) - 1)
+def engine_torque(rpm):
+    if rpm >= REDLINE:
+        return 0
+    for i in range(len(TORQUE) - 1):
+        x0, y0 = TORQUE[i]
+        x1, y1 = TORQUE[i + 1]
+        if x0 <= rpm <= x1:
+            t = (rpm - x0) / (x1 - x0)
+            return lerp(y0, y1,t)
+    return TORQUE[0][1]
 speedometer = Text(text="0 km/h", position=window.bottom_right + Vec2(-1.25, 0.08),scale=2, color=color.white)
 progress_t=Text(text="0", position=window.bottom_left+ Vec2(0.03,0.08), scale=2, color=color.white)
 _, seg0, t0 = locate(car.x, car.z)
@@ -165,7 +192,6 @@ def fmt(sec):
     return f"{int(m)}:{s:06.3f}"
 def update():
     global speed, last_progress, total, laps, lap_start, race_time, max_index, best_time,last_segment,lap_valid,v_side,r,ax_f
-    dt = max(float(time.dt), 1e-6)
     steer, throttle, brake = analyze_input()
     road_dist, seg, t = locate(car.x, car.z, last_segment)
     last_segment = seg
@@ -182,14 +208,13 @@ def update():
     speed_start = speed
     a_long = 0
     F_x_f = F_x_r = 0
-    caps = [12 * (1 - speed/VMAX) * throttle]
-    if DRIVE_REAR > 0:
-        caps.append(TC_LIMIT * F_max_r / (MASS * DRIVE_REAR))
-    if 0 < 1 - DRIVE_REAR:
-        caps.append(TC_LIMIT * F_max_f / (MASS * (1 - DRIVE_REAR)))
-        a_long = min(caps)
+    ratio = REVERSE if gear == -1 else GEARS[gear]
+    direction=-1 if gear == -1 else 1
+    rpm = abs(speed)/R_WHEEL*ratio* F_DRIVE * 60 /(2*pi)
+    rpm=max(rpm,IDLE)
     if throttle > 0:
-        traction_limits = [12 * (1 - speed/VMAX) * throttle]
+        a_engine=throttle*engine_torque(rpm)*ratio*F_DRIVE*EFF/R_WHEEL/MASS
+        traction_limits = [a_engine]
         if DRIVE_REAR > 0:
             traction_limits.append(TC_LIMIT * F_max_r / (MASS * DRIVE_REAR))
         if 1 - DRIVE_REAR > 0:
@@ -197,15 +222,20 @@ def update():
         a_long = min(traction_limits)
         F_x_r = MASS * a_long * DRIVE_REAR
         F_x_f = MASS * a_long * (1 - DRIVE_REAR)
-        acceleration=a_long-rolling
-        if speed <= 0:
-            acceleration = max(0, acceleration)        
-        speed+=acceleration*time.dt
+        acceleration=a_long-rolling-DRAG*speed**2
+        rd= speed * direction
+        if rd <= 0:
+            acceleration = max(0, acceleration)
+        speed += direction * acceleration * time.dt        
     elif brake > 0:
         a_long=brake * min(ABS_LIMIT * F_max_f / (BRAKE_FRONT * MASS),ABS_LIMIT * F_max_r / ((1 - BRAKE_FRONT) * MASS))
         F_x_f=BRAKE_FRONT*MASS*a_long
         F_x_r=(1-BRAKE_FRONT)*MASS*a_long
-        speed-=a_long*time.dt
+        sgn= 1 if speed > 0 else -1
+        nspeed = speed - sgn* a_long * time.dt
+        if nspeed * speed < 0:
+            nspeed = 0
+        speed=nspeed
     else:
         k = rolling + speed**2 * DRAG
         if abs(speed) < k * time.dt:
@@ -215,12 +245,13 @@ def update():
     speed = clamp(speed, -8, VMAX)
     steer_angle = steer * radians(MAX_STEER) / (1 + (speed / 15) ** 2)
     nz=max(abs(speed),1)
-    alpha_f=atan2(v_side+A*r,nz)-steer_angle
-    alpha_r=atan2(v_side-B*r,nz)
+    s=1 if speed>=0 else -1
+    alpha_f = atan2(v_side + A*r, nz) - s * steer_angle
+    alpha_r = atan2(v_side - B*r, nz)
     cap_f=sqrt(max(F_max_f**2 - F_x_f**2, 0))
     cap_r=sqrt(max(F_max_r**2 - F_x_r**2, 0))
-    F_yf=-cap_f * tanh(alpha_f / ALPHA0)
-    F_yr=-cap_r * tanh(alpha_r / ALPHA0)
+    F_yf=-cap_f * sin(C * atan(alpha_f / (C * ALPHA0)))
+    F_yr=-cap_r * sin(C * atan(alpha_r / (C * ALPHA0)))
     fade = min(1, abs(speed) / V_FADE)
     F_yf *= fade
     F_yr *= fade
@@ -237,8 +268,8 @@ def update():
         v_side -= min(abs(v_side), drag_side) * (1 if v_side > 0 else -1)
     car.rotation_y += degrees(r) * time.dt
     car.position += car.forward * speed * time.dt + car.right * v_side * time.dt
-    a_lat = (F_yf * cos(steer_angle) + F_yr) / MASS / 9.81# у g
-    speedometer.text = f'{abs(speed)*3.6:.0f} km/h   aF {degrees(alpha_f):.1f}  aR {degrees(alpha_r):.1f}  lat {a_lat:.2f}g'
+    g = 'R' if gear == -1 else gear + 1
+    speedometer.text = f'{abs(speed)*3.6:.0f} km/h rpm {rpm:.0f} gear {g}'
     progress=t+seg
     progress_t.text=f"{progress:.1f}"
     delta=progress-last_progress
