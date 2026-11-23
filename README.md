@@ -1,115 +1,74 @@
 # 🚗 3D Car Simulator
 
-A lightweight 3D car simulator built with Python and **Ursina Engine**.
+Невеликий 3D-симулятор автомобіля на Python та Ursina Engine. У грі є процедурно побудована траса, керування клавіатурою й геймпадом, спрощена модель автомобільної фізики та облік кіл.
 
-The project includes a generated racing track, keyboard and gamepad support, basic vehicle dynamics, lap timing, and different grip behavior for asphalt and grass.
+## Можливості
 
-## ✨ Features
+- 3D-траса, сформована з координат у `track.json`;
+- керування клавіатурою або геймпадом із dead zone для стиків і тригерів;
+- перемикання передач, задній хід і відображення швидкості, обертів двигуна та передачі;
+- різне зчеплення й опір на асфальті та траві;
+- спрощена фізика прискорення, гальмування, опору повітря, зносу шин і бокового ковзання;
+- відбійники вздовж траси та сліди шин під час заносу;
+- таймер кіл, найкраще дійсне коло та позначення кола, зіпсованого виїздом із траси.
 
-- 3D racing environment
-- Keyboard and gamepad controls
-- Asphalt and grass surface handling
-- Steering, braking, rolling resistance, and aerodynamic drag
-- Real-time speed and lateral acceleration display
-- Lap counter and current/best lap time
-- Procedurally loaded circuit from `track.json`
-- Finish-line rendering
-- Circuit validation with track visualization
+## Керування
 
-## 🎮 Controls
-
-| Action | Keyboard | Gamepad |
+| Дія | Клавіатура | Геймпад |
 |---|---|---|
-| Accelerate | `W` | Right trigger |
-| Brake / reverse | `S` | Left trigger |
-| Steer left | `A` | Left stick |
-| Steer right | `D` | Left stick |
-| Exit | Window controls | Window controls |
+| Розгін | `W` | Правий тригер |
+| Гальмування / рух назад | `S` | Лівий тригер |
+| Поворот ліворуч / праворуч | `A` / `D` | Лівий стік |
+| Перемкнути передачу вгору / вниз | `E` / `Q` | `A` / `B` |
 
-> Trigger, stick, and steering dead zones are applied to improve controller handling.
+Перехід на задню передачу та з неї дозволений лише на низькій швидкості. Вихід із гри — кнопкою закриття вікна.
 
-## 🛠️ Requirements
+## Вимоги
 
-- Python 3.10 or newer
-- `ursina`
-- `svgpathtools`
-- `matplotlib`
+- Python 3.10 або новіший;
+- `ursina`;
+- для генерації траси: `svgpathtools` і `matplotlib`.
 
-## 📦 Installation
-
-Clone the repository:
+## Встановлення
 
 ```bash
 git clone https://github.com/solodevelloper14/3D-car-simulator.git
 cd 3D-car-simulator
-```
-
-Install the dependencies:
-
-```bash
 pip install ursina svgpathtools matplotlib
 ```
 
-## ▶️ Running the Simulator
-
-Start the game:
+## Запуск
 
 ```bash
 python "main(3d).py"
 ```
 
-Make sure `track.json`, `ring.svg`, and the `textures` directory are available in the repository root.
+### Важливо про ресурси
 
-## 🗺️ Generating the Track
+На момент оновлення README у репозиторії є `asphalt.jpg`, `finish.png`, `icon.ico`, `ring.svg` і `track.json`. Однак `main(3d).py` зараз завантажує текстури з `textures/asphalt.jpg` та `textures/finish.png`, землю з текстури `grass`, а також моделі з `models/porsche_911_gt3/scene.gltf` і `models/barrier/scene.gltf`. Каталогів `textures/` і `models/`, а також файлу текстури трави в репозиторії немає. Тому перед запуском потрібно додати ці ресурси у вказані шляхи або змінити шляхи завантаження в коді. `track.json` уже є в корені репозиторію.
 
-The circuit is generated from `ring.svg` with `track_check.py`.
+## Генерація траси
+
+`track_check.py` читає `ring.svg`, бере перший SVG-шлях, рівномірно семплює його у 750 точках, масштабує координати у 5 разів і записує їх у `track.json`. Також скрипт виводить у консоль, чи замкнений шлях, і його масштабовану довжину, а потім показує графік траси.
 
 ```bash
 python track_check.py
 ```
 
-This script:
+Після повторної генерації перевірте, що шлях у `ring.svg` замкнений: логіка траси та підрахунку кіл у симуляторі розрахована на замкнутий маршрут.
 
-1. Loads `ring.svg`.
-2. Converts the SVG path into 750 points.
-3. Applies a scale factor of `5`.
-4. Saves the result as `track.json`.
-5. Displays the generated circuit using Matplotlib.
-
-## 📁 Project Structure
+## Структура репозиторію
 
 ```text
 .
-├── main(3d).py       # Main Ursina simulator
-├── track_check.py    # Converts ring.svg into track.json
-├── track.json        # Racing track coordinates
-├── ring.svg          # Source vector track
-├── textures/
-│   ├── asphalt.jpg   # Road texture
-│   └── finish.png    # Finish-line texture
-├── grass.jpg         # Terrain texture
-└── README.md
+├── README.md
+├── main(3d).py       # Симулятор на Ursina
+├── track_check.py    # Генерація track.json із ring.svg
+├── track.json        # Координати траси
+├── ring.svg          # Вихідний SVG-шлях траси
+├── asphalt.jpg       # Файл у корені; шлях у коді наразі інший
+├── finish.png        # Файл у корені; шлях у коді наразі інший
+└── icon.ico          # Іконка вікна
 ```
 
-## 🧠 Vehicle Physics
-
-The simulator includes simplified vehicle and tire behavior:
-
-- Speed-dependent steering angle
-- Dry asphalt and grass grip levels
-- Acceleration and aerodynamic drag
-- Rolling resistance
-- Front and rear tire slip angles
-- Corner drag
-- Speed-dependent lateral movement
-- Grass off-track drag
-- Traction and braking limits
-
-## 🏁 Lap Tracking
-
-Lap distance is calculated along the circuit points in `track.json`.
-
-- A lap is counted after completing a full circuit.
-- Leaving the road invalidates the current lap.
-- Returning to the circuit resets lap validation.
-- The interface shows the current lap time and the best valid lap.
+Папки `textures/`, `models/` і текстури трави згадуються шляхами у коді, але наразі не входять до репозиторію.
