@@ -1,6 +1,8 @@
 from ursina import *
+from ursina.shaders import basic_lighting_shader
 from math import sqrt, radians, degrees, atan, atan2,sin,cos,pi
 import json
+from panda3d.core import MaterialAttrib, TransparencyAttrib
 
 app = Ursina(icon="icon.ico")
 window.title = 'Car Simulator'
@@ -21,12 +23,63 @@ finish_texture=load_texture('textures/finish.png')
 finish=Entity(model='quad',texture=finish_texture,position=(fx, 0.02, fz),rotation=(90, degrees(atan2(fx1 - fx, fz1 - fz)), 0),scale=(road_width, 4),)   #повернута вздовж дороги
 # Машина
 car = Entity()
-# кузов
-Entity(parent=car, model='cube', color=color.azure,
-       scale=(1.8, 0.6, 4.5), y=0.45, collider='box')
-# кабіна
-Entity(parent=car, model='cube', color=color.light_gray,
-       scale=(1.6, 0.5, 2.2), y=1.025, z=-0.2)
+car.collider = BoxCollider(car, center=(0, 0.5, 0), size=(1.9, 1, 4.6))
+body = Entity(parent=car, model='models/porsche_911_gt3/scene.gltf', rotation_y=180)
+body.shader=basic_lighting_shader
+#Освітлення
+sun = DirectionalLight()
+sun.look_at(Vec3(1, -1, -1))
+AmbientLight(color=color.rgba(120, 120, 120, 0.5))
+KEEP = {'INT_Metal_Rollbar.001'}
+interior = []
+for gnp in body.model.find_all_matches('**/+GeomNode'):
+    gn = gnp.node()
+    if gn.get_num_geoms() == 0:
+        continue
+    attrib = gn.get_geom_state(0).get_attrib(MaterialAttrib)
+    if attrib is None or attrib.get_material() is None:
+        continue
+    m = attrib.get_material()
+    name = m.get_name()
+    if name.startswith('INT_') and name not in KEEP:
+        interior.append(gnp)
+    col = m.get_base_color()
+    gamma = 1 / 2.2
+    gnp.set_color_scale(col[0]**gamma, col[1]**gamma, col[2]**gamma, col[3])
+    if col[3] < 1:
+        gnp.set_transparency(TransparencyAttrib.M_alpha)
+#Колеса
+corners = {}
+for p in body.model.find_all_matches('**'):
+    if not any(k in p.name for k in ('Tyre', 'rim', 'Hub', 'DISC', 'Caliper')):
+        continue
+    b = p.get_tight_bounds(car)
+    if b is None:
+        continue
+    c = (b[0] + b[1]) / 2
+    key = (1 if c.x > 0 else -1, 1 if c.z > 0 else -1)
+    d = corners.setdefault(key, {'centers': [], 'spin': [], 'caliper': []})
+    if 'Caliper' in p.name:
+        d['caliper'].append(p)
+    else:
+        d['spin'].append(p)
+        if 'Tyre' in p.name:
+            d['centers'].append(c)
+wheels = {}
+for key, d in corners.items():
+    if not d['centers']:
+        continue
+    center = Vec3(0, 0, 0)
+    for c in d['centers']:
+        center += c
+    center = center / len(d['centers'])
+    steer_pivot = Entity(parent=car, position=center, shader=basic_lighting_shader)
+    spin = Entity(parent=steer_pivot, shader=basic_lighting_shader)
+    for p in d['spin']:
+        p.wrt_reparent_to(spin)
+    for p in d['caliper']:
+        p.wrt_reparent_to(steer_pivot)
+    wheels[key] = (steer_pivot, spin)
 STEER_DEADZONE = 0.1
 TRIGGER_DEADZONE = 0.02
 def apply_deadzone(v, dz):
@@ -79,11 +132,122 @@ for i in range(n):
     triangles.append((a, b, d))
     triangles.append((a, d, c))
 road = Entity(model=Mesh(vertices=vert, triangles=triangles, uvs=uvs, mode='triangle'), texture=asphalt_texture, double_sided=True)
+#Відбійники вздовж країв траси
+BARRIER_SPC = 4
+BARRIER_OFFSET = road_width/2+10
+BARRIER_NATIVE_LENGTH = 1.4396947622299194 * 2
+BARRIER_STRAIGHT_ANGLE = 2
+BARRIER_TOTAL_ANGLE = 5
+BARRIER_STRAIGHT_DEVIATION = 1.0
+BARRIER_STRAIGHT_MIN_SEGMENTS = 15
+barriers = []
+def add_stretched_barriers(ax, az, bx, bz):
+    dx, dz = bx - ax, bz - az
+    segment_length = sqrt(dx * dx + dz * dz)
+    if segment_length == 0:
+        return
+    dx/=segment_length
+    dz/=segment_length
+    n_x,n_z = dz, -dx
+    yaw=degrees(atan2(dx, dz)) + 90
+    cx=(ax+bx)/2
+    cz=(az+bz)/2
+    scale_x = segment_length / BARRIER_NATIVE_LENGTH
+    for side in (-1, 1):
+        b = Entity(model='models/barrier/scene.gltf',position=(cx+n_x*BARRIER_OFFSET*side,0,cz+n_z*BARRIER_OFFSET*side),rotation_y=yaw,scale=(scale_x, 1.5, 1.5), collider='box', shader=basic_lighting_shader)
+        b.wall_n = (-n_x * side, -n_z * side)
+        barriers.append(b)
+def add_segment_barriers(ax, az, bx, bz):
+    dx, dz = bx - ax, bz - az
+    segment_length = sqrt(dx * dx + dz * dz)
+    if segment_length == 0:
+        return
+    dx /= segment_length
+    dz /= segment_length
+    n_x, n_z = dz, -dx
+    yaw = degrees(atan2(dx, dz)) + 90
+    count = int(segment_length // BARRIER_SPC)
+    for j in range(count + 1):
+        distance = j * BARRIER_SPC
+        if distance > segment_length:
+            break
+        x = ax + dx * distance
+        z = az + dz * distance
+        for side in (-1, 1):
+            b = Entity(model='models/barrier/scene.gltf',position=(x+n_x*BARRIER_OFFSET*side,0,z+n_z*BARRIER_OFFSET*side), rotation_y=yaw,scale=1.5, collider='box', shader=basic_lighting_shader)
+            b.wall_n = (-n_x * side, -n_z * side)
+            barriers.append(b)
+def segment_heading(i):
+    i %= n
+    ax,az=dots[i]
+    bx,bz=dots[(i+1)%n]
+    dx,dz=bx-ax, bz - az
+    length=sqrt(dx*dx+dz*dz)
+    if length == 0:
+        return None
+    return dx / length, dz / length
+def heading_diff(a,b):
+    dot = clamp(a[0]*b[0]+a[1]*b[1],-1,1)
+    return abs(degrees(atan2(a[0]*b[1]-a[1]*b[0], dot)))
+straight_runs = []
+covered_segments = set()
+def straight_deviation(start, end):
+    ax, az = dots[start]
+    bx, bz = dots[end]
+    dx, dz = bx - ax, bz - az
+    length = sqrt(dx * dx + dz * dz)
+    if length == 0:
+        return 0
+    max_deviation = 0
+    for k in range(start, end + 1):
+        px, pz = dots[k]
+        rx, rz = px - ax, pz - az
+        deviation = abs(dx * rz - dz * rx) / length
+        max_deviation = max(max_deviation, deviation)
+    return max_deviation
+i = 0
+while i < n - 1:
+    initial_heading = segment_heading(i)
+    if initial_heading is None:
+        i += 1
+        continue
+    end = i
+    while end + 1 < n:
+        next_heading = segment_heading(end + 1)
+        if next_heading is None:
+            break
+        if heading_diff(initial_heading, next_heading) > BARRIER_TOTAL_ANGLE:
+            break
+        if heading_diff(segment_heading(end), next_heading) > BARRIER_STRAIGHT_ANGLE:
+            break
+        end_point = end + 2 if end + 2 < n else end + 1
+        if straight_deviation(i, end_point) > BARRIER_STRAIGHT_DEVIATION:
+            break
+        end += 1
+    segment_count = end - i + 1
+    if segment_count >= BARRIER_STRAIGHT_MIN_SEGMENTS:
+        straight_runs.append((i, end))
+        for segment_index in range(i, end + 1):
+            covered_segments.add(segment_index)
+        i = end + 1
+    else:
+        i += 1
+for i in range(n):
+    if i not in covered_segments:
+        ax, az = dots[i]
+        bx, bz = dots[(i + 1) % n]
+        add_segment_barriers(ax, az, bx, bz)
+for start, end in straight_runs:
+    ax, az = dots[start]
+    bx, bz = dots[end + 1]
+    add_stretched_barriers(ax, az, bx, bz)
 # Камера
 camera.parent = car
 camera.position = (0, 2.7, -7.5)
 camera.rotation = (14, 0, 0)
-camera.fov=70
+#camera.position = (7, 1.5, 0)
+#camera.rotation = (0, -90, 0)
+#camera.fov=70
 #editor_camera = EditorCamera()
 #camera.parent = None
 #camera.position = (0, 350, 0)
@@ -122,6 +286,11 @@ IDLE = 900
 REDLINE=7000
 TORQUE =[(900, 250),(2500, 340), (4500, 400), (6000, 390), (7000, 330)]
 EFF = 0.9 #ККД трансмісії
+ENG_BRAKE=90
+OVERREV_K=20
+REST = 0.2#скільки швидкості відбивається від стіни
+WALL_F = 0.3#скільки швидкості стіна гасить тертям
+PUSH = 0.15
 gear = 0
 ax_f = 0
 r=0
@@ -158,11 +327,18 @@ def surface(road_dist):
     return GRIP_DRY_GRASS, ROLL_GRASS
 def input(key):
     global gear
-    if key=="gamepad a":
-        gear+=1
-    elif key=="gamepad b":
-        gear-=1
-    gear = clamp(gear, -1, len(GEARS) - 1)
+    if key in ("e", "gamepad a"):
+        delta = 1
+    elif key in ("q", "gamepad b"):
+        delta = -1
+    else:
+        return
+    new = clamp(gear + delta, -1, len(GEARS) - 1)
+    if new == gear:
+        return
+    if -1 in (gear, new) and abs(speed) >= 5:
+        return
+    gear = new
 def engine_torque(rpm):
     if rpm >= REDLINE:
         return 0
@@ -173,6 +349,10 @@ def engine_torque(rpm):
             t = (rpm - x0) / (x1 - x0)
             return lerp(y0, y1,t)
     return TORQUE[0][1]
+def gear_ratio(g):
+    return REVERSE if g == -1 else GEARS[g]
+def wheel_rpm(spd, g):
+    return abs(spd) / R_WHEEL * gear_ratio(g) * F_DRIVE * 60 / (2*pi)
 speedometer = Text(text="0 km/h", position=window.bottom_right + Vec2(-1.25, 0.08),scale=2, color=color.white)
 progress_t=Text(text="0", position=window.bottom_left+ Vec2(0.03,0.08), scale=2, color=color.white)
 _, seg0, t0 = locate(car.x, car.z)
@@ -187,11 +367,16 @@ best_time = None
 lap_text = Text(text="", position=window.top_left + Vec2(0.02, -0.02), scale=2)
 lap_valid=True
 v_side=0
+SDK_LIFETIME = 20
+SDK_INTERVAL = 0.0025
+skidmark_timer = 0
+skidmarks = []
+CORNERS = [(-0.95, -2.3), (0.95, -2.3), (-0.95, 2.3), (0.95, 2.3)]
 def fmt(sec):
     m, s = divmod(sec, 60)
     return f"{int(m)}:{s:06.3f}"
 def update():
-    global speed, last_progress, total, laps, lap_start, race_time, max_index, best_time,last_segment,lap_valid,v_side,r,ax_f
+    global speed, last_progress, total, laps, lap_start, race_time, max_index, best_time,last_segment,lap_valid,v_side,r,ax_f,skidmark_timer
     steer, throttle, brake = analyze_input()
     road_dist, seg, t = locate(car.x, car.z, last_segment)
     last_segment = seg
@@ -208,10 +393,9 @@ def update():
     speed_start = speed
     a_long = 0
     F_x_f = F_x_r = 0
-    ratio = REVERSE if gear == -1 else GEARS[gear]
+    ratio =gear_ratio(gear)
     direction=-1 if gear == -1 else 1
-    rpm = abs(speed)/R_WHEEL*ratio* F_DRIVE * 60 /(2*pi)
-    rpm=max(rpm,IDLE)
+    rpm = max(wheel_rpm(speed, gear), IDLE)
     if throttle > 0:
         a_engine=throttle*engine_torque(rpm)*ratio*F_DRIVE*EFF/R_WHEEL/MASS
         traction_limits = [a_engine]
@@ -237,7 +421,14 @@ def update():
             nspeed = 0
         speed=nspeed
     else:
-        k = rolling + speed**2 * DRAG
+        x = rpm / REDLINE
+        factor = x + OVERREV_K * max(0, x - 1)**2
+        a_eb = ENG_BRAKE*factor*ratio*F_DRIVE*EFF/R_WHEEL/MASS
+        if DRIVE_REAR > 0:
+            a_eb = min(a_eb, 0.95 * F_max_r / (MASS * DRIVE_REAR))
+        k = rolling + speed**2 * DRAG + a_eb
+        F_x_r = MASS * a_eb * DRIVE_REAR
+        F_x_f = MASS * a_eb * (1 - DRIVE_REAR)
         if abs(speed) < k * time.dt:
             speed = 0
         else:
@@ -268,7 +459,73 @@ def update():
         v_side -= min(abs(v_side), drag_side) * (1 if v_side > 0 else -1)
     car.rotation_y += degrees(r) * time.dt
     car.position += car.forward * speed * time.dt + car.right * v_side * time.dt
+    for barrier in barriers:
+        dx = car.x - barrier.x
+        dz = car.z - barrier.z
+        if dx * dx + dz * dz > 36:
+            continue
+        if car.intersects(barrier).hit:
+            nx,nz = barrier.wall_n
+            vx=car.forward.x*speed + car.right.x * v_side
+            vz=car.forward.z*speed + car.right.z * v_side
+            vn = vx * nx + vz * nz#складова вздовж нормалі
+            best_depth = 1e9
+            for lx, lz in CORNERS:
+                rx = car.right.x*lx + car.forward.x * lz
+                rz = car.right.z*lx + car.forward.z * lz
+                depth=rx*nx + rz*nz
+                if depth < best_depth:
+                    best_depth = depth
+                    best_rx, best_rz = rx, rz
+            k = nx * best_rz - nz * best_rx
+            vc=vn+r*k
+            if vc<0:
+                J=-(1+REST)*vc/(1/MASS+k**2/IN_MOMENT)
+                vx += J / MASS * nx
+                vz += J / MASS * nz
+                r+=J*k/IN_MOMENT
+                vn2 = vx * nx + vz * nz#тертя об стіну
+                vt_x = vx - vn2 * nx
+                vt_z = vz - vn2 * nz
+                vx = vn2 * nx + vt_x * (1 - WALL_F)
+                vz = vn2 * nz + vt_z * (1 - WALL_F)
+                speed  = vx * car.forward.x + vz * car.forward.z
+                v_side = vx * car.right.x   + vz * car.right.z
+            car.position += Vec3(nx, 0, nz)*PUSH
+            break
+    for (_, axle), (steer_pivot, spin) in wheels.items():
+        if axle > 0:
+            steer_pivot.rotation_y = degrees(steer_angle)
+        else:
+            steer_pivot.rotation_y = 0
+        spin.rotation_x += degrees(speed * time.dt / R_WHEEL)
+
+    skidmark_timer -= time.dt
+    drift=road_dist < road_width / 2 and abs(speed) > 8 and abs(alpha_r) > radians(8)
+    if drift and skidmark_timer <= 0:
+        skidmark_timer = SDK_INTERVAL
+        for (_, axle), (steer_pivot, spin) in wheels.items():
+            if axle >= 0:
+                continue
+            world_pos = steer_pivot.world_position
+            mark = Entity(model='quad',position=(world_pos.x, 0.025, world_pos.z),rotation=(90, car.rotation_y, 0),scale=(0.12, 0.45),color=color.rgba(0,0,0, 180),double_sided=True)
+            mark.set_transparency(TransparencyAttrib.M_alpha)
+            mark.lifetime = SDK_LIFETIME
+            skidmarks.append(mark)
+            if len(skidmarks) > 400:
+                old_mark = skidmarks.pop(0)
+                destroy(old_mark)
+    for mark in skidmarks[:]:
+        mark.lifetime -= time.dt
+        if mark.lifetime <= 0:
+            destroy(mark)
+            skidmarks.remove(mark)
+        else:
+            alpha = int(180 * mark.lifetime / SDK_LIFETIME)
+            mark.color = color.rgba(0, 0, 0, alpha)
+
     g = 'R' if gear == -1 else gear + 1
+    camera.fov = 70 + abs(speed) * 0.25
     speedometer.text = f'{abs(speed)*3.6:.0f} km/h rpm {rpm:.0f} gear {g}'
     progress=t+seg
     progress_t.text=f"{progress:.1f}"
